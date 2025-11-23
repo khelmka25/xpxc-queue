@@ -72,5 +72,5 @@ TEST_CASE("General Testing") {
   std::cout << "Average Thread Time: ms" << avg_thread_time_ms << std::endl;
 
   auto result = counter.load();
-  REQUIRE(result == ((1 + 2 + 3+4) * cycles));
+  REQUIRE(result == ((1+2+3+4) * cycles));
 }

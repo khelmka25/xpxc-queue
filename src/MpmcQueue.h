@@ -19,13 +19,9 @@ class MpmcQueue {
 
   enum State : uint8_t { kEmpty, kFilling, kFull, kEmptying };
 
-  static constexpr IndexType size() {
-    return N;
-  }
+  static constexpr IndexType size() { return N; }
 
-  static constexpr IndexType size_minus_one() {
-    return N - 1u;
-  }
+  static constexpr IndexType size_minus_one() { return N - 1u; }
 
   std::atomic<uint8_t> cellStates[N];
   T elements[N];
@@ -42,6 +38,7 @@ class MpmcQueue {
       // get the current write position and increment the read index (for
       // unsigned, overflow is well defined)
       const IndexType wr_pos = atm_wr_pos.fetch_add(1u, std::memory_order_acquire) & (size_minus_one());
+
       // get the current state of this load address
       uint8_t expectedState = State::kEmpty;
       /*Were we successful in modifying the state?*/
@@ -59,6 +56,11 @@ class MpmcQueue {
 
   void pop(T& value) noexcept {
     for (;;) {
+      // empty buffer
+      if ((atm_rd_pos.load(std::memory_order_acquire)) == (atm_wr_pos.load(std::memory_order_acquire))) {
+        continue;
+      }
+
       // get the current read position and increment the read index (for
       // unsigned, overflow is well defined)
       const IndexType rd_pos = atm_rd_pos.fetch_add(1u, std::memory_order_acquire) & (size_minus_one());
@@ -74,4 +76,27 @@ class MpmcQueue {
       // std::this_thread::yield();
     }
   }
+
+  // empty if wr == rd
+  bool was_empty() const noexcept { return atm_rd_pos.load() == atm_wr_pos.load(); }
+
+  // full if wr == (rd - 1)
+  bool was_full() const noexcept {
+    auto rd_pos = atm_rd_pos.load(std::memory_order_acquire);
+    auto wr_pos = atm_wr_pos.load(std::memory_order_acquire);
+    auto state = cellStates[rd_pos].load(std::memory_order_acquire);
+    return (rd_pos == wr_pos) && (state == State::kFull);
+  }
 };
+
+// // wr_pos -> [0, N)
+// wr_pos = TO_BOUNDED(atm_wr_pos.load(std::memory_order_relaxed));
+// // rd_pos -> [0, N)
+// rd_pos = (atm_rd_pos.load(std::memory_order_relaxed));
+// // is the buffer full [[unlikely]]
+// if (wr_pos == TO_BOUNDED(rd_pos - 1u)) {
+//   std::this_thread::yield();
+//   continue;
+// }
+
+// atm_wr_pos.fetch_add(1u, std::memory_order_relaxed);
