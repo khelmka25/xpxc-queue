@@ -20,7 +20,7 @@ TEST_CASE("General Testing") {
   // float avg_thread_time_ms = float(cpu_time_ns.count() / 1'000'000ull);
   // std::cout << "Average Thread Time: ms" << avg_thread_time_ms << std::endl;
 
-  MpmcQueue<int, 64> queue;
+  MpmcQueue<int, 1024> queue;
 
   std::atomic<std::size_t> counter = 0;
 
@@ -28,16 +28,18 @@ TEST_CASE("General Testing") {
   auto count = 4;
   std::cout << count << std::endl;
 
-  std::vector<std::chrono::nanoseconds> elapsed_times;
-  elapsed_times.resize(2 * count);
+  std::vector<std::chrono::nanoseconds> consumerTimes(count);
+  std::vector<std::chrono::nanoseconds> producerTimes(count);
 
   {
-    std::vector<std::jthread> jThreadPool;
-    jThreadPool.resize(2 * count);
+
+    std::atomic_flag f(false);
 
     // 4 consumers
+    std::vector<std::jthread> consumerThreads(count);
     for (int i = 0; i < count; i++) {
-      jThreadPool[count + i] = std::move(std::jthread([&queue, &elapsed_time = elapsed_times[i + count], &counter] {
+      consumerThreads[i] = std::move(std::jthread([&queue, &f, &elapsed_time = consumerTimes[i], &counter] {
+        f.wait(false);
         const auto start = std::chrono::steady_clock::now();
         for (int i = 0; i < cycles; i++) {
           int s;
@@ -50,8 +52,10 @@ TEST_CASE("General Testing") {
     }
 
     // 4 producers
+    std::vector<std::jthread> producerThreads(count);
     for (int i = 0; i < count; i++) {
-      jThreadPool[i] = std::move(std::jthread([&queue, id = (i + 1), &elapsed_time = elapsed_times[i], &counter] {
+      producerThreads[i] = std::move(std::jthread([&queue, &f, id = (i + 1), &elapsed_time = producerTimes[i], &counter] {
+        f.wait(false);
         const auto start = std::chrono::steady_clock::now();
         for (int i = 0; i < cycles;i++) {
           queue.push(id);
@@ -60,16 +64,23 @@ TEST_CASE("General Testing") {
         elapsed_time = end - start;
       }));
     }
+
+    f.test_and_set();
+    f.notify_all();
   }
 
   std::chrono::nanoseconds cpu_time_ns{};
+  std::cout << "Producers:" <<std::endl;
   for (int i = 0; i < count; i++) {
-    cpu_time_ns += elapsed_times[i];
+    std::cout << "Thread " << i << ": " << std::chrono::duration_cast<std::chrono::milliseconds>(producerTimes[i]) << std::endl;
+    cpu_time_ns += producerTimes[i];
   }
 
-  float avg_thread_time_ms = float(cpu_time_ns.count() / 1'000'000ull) / float(count * 2);
-
-  std::cout << "Average Thread Time: ms" << avg_thread_time_ms << std::endl;
+  std::cout << "Consumers:" <<std::endl;
+  for (int i = 0; i < count; i++) {
+    std::cout << "Thread " << i << ": " << std::chrono::duration_cast<std::chrono::milliseconds>(consumerTimes[i]) << std::endl;
+    cpu_time_ns += consumerTimes[i];
+  }
 
   auto result = counter.load();
   REQUIRE(result == ((1+2+3+4) * cycles));

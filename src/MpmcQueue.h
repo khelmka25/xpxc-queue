@@ -14,8 +14,8 @@ class MpmcQueue {
   // alignas(/*std::hardware_destructive_interference_size*/ 64) std::atomic<IndexType> atm_rd_pos;
   // alignas(/*std::hardware_destructive_interference_size*/ 64) std::atomic<IndexType> atm_wr_pos;
 
-  std::atomic<IndexType> atm_rd_pos;
-  std::atomic<IndexType> atm_wr_pos;
+  alignas(64) std::atomic<IndexType> atm_rd_pos;
+  alignas(64) std::atomic<IndexType> atm_wr_pos;
 
   enum State : uint8_t { kEmpty, kFilling, kFull, kEmptying };
 
@@ -27,17 +27,31 @@ class MpmcQueue {
   T elements[N];
 
   MpmcQueue() : atm_rd_pos(0u), atm_wr_pos(0u) {
-    static_assert(std::atomic<IndexType>::is_always_lock_free, "Help me please!");
+    static_assert(std::atomic<IndexType>::is_always_lock_free, "Index Type must be lockfree!");
     for (int i = 0; i < N; i++) {
       cellStates[i] = State::kEmpty;
     }
   }
 
+#define AS_BOUNDED(x) ((x) & (N - 1u))
+
   void push(const T& value) noexcept {
-    for (;;) {
-      // get the current write position and increment the read index (for
-      // unsigned, overflow is well defined)
-      const IndexType wr_pos = atm_wr_pos.fetch_add(1u, std::memory_order_acquire) & (size_minus_one());
+    do {
+      // // get the current write position and increment the read index (for
+      // // unsigned, overflow is well defined)
+      const IndexType wr_pos = AS_BOUNDED(atm_wr_pos.fetch_add(1u, std::memory_order_acquire));
+
+      // // // wr_pos -> [0, N)
+      // IndexType wr_pos = AS_BOUNDED(atm_wr_pos.load(std::memory_order_relaxed));
+      // // rd_pos -> [0, N)
+      // IndexType rd_pos = AS_BOUNDED(atm_rd_pos.load(std::memory_order_relaxed));
+      // // is the buffer full [[unlikely]]
+      // if (wr_pos == AS_BOUNDED(rd_pos - 1u)) {
+      //   std::this_thread::yield();
+      //   continue;
+      // }
+
+      // atm_wr_pos.fetch_add(1u, std::memory_order_relaxed);
 
       // get the current state of this load address
       uint8_t expectedState = State::kEmpty;
@@ -48,22 +62,22 @@ class MpmcQueue {
         // elements[wr_pos] = std::move(value);
         elements[wr_pos] = value;
         cellStates[wr_pos].store(State::kFull, std::memory_order_release);
-        break;
+        return;
       }
-      // std::this_thread::yield();
-    }
+      std::this_thread::yield();
+    } while (true);
   }
 
   void pop(T& value) noexcept {
-    for (;;) {
+    do {
       // empty buffer
-      if ((atm_rd_pos.load(std::memory_order_acquire)) == (atm_wr_pos.load(std::memory_order_acquire))) {
-        continue;
-      }
+      // if ((atm_rd_pos.load(std::memory_order_acquire)) == (atm_wr_pos.load(std::memory_order_acquire))) {
+      //   continue;
+      // }
 
       // get the current read position and increment the read index (for
       // unsigned, overflow is well defined)
-      const IndexType rd_pos = atm_rd_pos.fetch_add(1u, std::memory_order_acquire) & (size_minus_one());
+      const IndexType rd_pos = AS_BOUNDED(atm_rd_pos.fetch_add(1u, std::memory_order_acquire));
       // get the current state of this load address
       uint8_t expectedState = State::kFull;
       /*Was the state as expected?*/
@@ -71,10 +85,10 @@ class MpmcQueue {
                                                      std::memory_order_relaxed)) {
         value = (elements[rd_pos]);
         cellStates[rd_pos].store(State::kEmpty, std::memory_order_release);
-        break;
+        return;
       }
-      // std::this_thread::yield();
-    }
+      std::this_thread::yield();
+    } while (true);
   }
 
   // empty if wr == rd
@@ -88,15 +102,3 @@ class MpmcQueue {
     return (rd_pos == wr_pos) && (state == State::kFull);
   }
 };
-
-// // wr_pos -> [0, N)
-// wr_pos = TO_BOUNDED(atm_wr_pos.load(std::memory_order_relaxed));
-// // rd_pos -> [0, N)
-// rd_pos = (atm_rd_pos.load(std::memory_order_relaxed));
-// // is the buffer full [[unlikely]]
-// if (wr_pos == TO_BOUNDED(rd_pos - 1u)) {
-//   std::this_thread::yield();
-//   continue;
-// }
-
-// atm_wr_pos.fetch_add(1u, std::memory_order_relaxed);
